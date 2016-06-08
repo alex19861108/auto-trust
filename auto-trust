@@ -1,0 +1,168 @@
+#!/bin/sh
+
+log_error()
+{
+	echo -e "\033[31m $@ \033[0m"
+}
+
+log_info()
+{
+	echo -e "\033[32m $@ \033[0m"
+}
+
+log_warning()
+{
+	echo -e "\033[33m $@ \033[0m"
+}
+
+help()
+{
+	echo -e "Usage: $(basename $0) <user@machine> <passwd>"
+}
+
+logfile="~/.$(basename $0).log"
+
+expect_ssh_copy_id()
+{
+	if [ "$#" -ne "5" ]; then
+		#echo "expect_ssh_copy_id <remoteUser> <remoteHostname> <remotePasswd> <localUserhome> <timeout>";
+		log_error "expect_ssh_copy_id <remoteUser> <remoteHostname> <remotePasswd> <localUserhome> <timeout>";
+		exit 1;
+	fi
+	local remoteUser=$1
+	local remoteHostname=$2
+	local remotePasswd=$3
+	local localUserhome=$4
+	local timeout=$5
+  
+	expect -d -c "
+		set timeout $timeout 
+		spawn ssh-copy-id -i $localUserhome/.ssh/id_rsa.pub $remoteUser@$remoteHostname
+		expect {
+			\"*yes/no\" { send \"yes\r\"; exp_continue }
+			\"*assword:\" { send \"$remotePasswd\r\" }
+		}
+		expect eof
+	" 1>/dev/null 2>&1
+}
+
+expect_ssh_keygen()
+{
+	if [ "$#" -ne "2" ]; then
+		#echo "expect_ssh_keygen <localUserhome> <timeout>";
+		log_error "expect_ssh_keygen <localUserhome> <timeout>";
+		exit 1;
+	fi
+
+	local localUserhome=$1;
+	local timeout=$2;
+	if [ -f ${localUserhome}/.ssh/id_rsa.pub -a -f ${localUserhome}/.ssh/id_rsa ] ; then
+		#echo "${localUserhome} is already create id_rsa.pub and id_rsa"
+		log_info "${localUserhome} is already create id_rsa.pub and id_rsa"
+	else
+		#echo "${localUserhome} is not set id_rsa.pub and id_rsa.pub"
+		log_info "${localUserhome} is not set id_rsa.pub and id_rsa.pub"
+		expect -d -c "
+			set timeout $timeout
+			spawn ssh-keygen
+			expect {
+				\"*save the key*id_rsa*\" {send \"\r\"; exp_continue }
+				\"*verwrite*y/n*\" { send \"y\r\"; exp_continue }
+				\"*passphrase*passphrase*\" { send \"\r\"; exp_continue }
+				\"*same passphrase*\" {send \"\r\" }
+			}
+			expect eof
+			exit 0
+		" 1>$logfile 2>&1
+		if [ "$?" -eq "0" ] ; then 
+			#echo "create id_rsa.pub,id_rsa successfully"
+			log_info "create id_rsa.pub,id_rsa successfully"
+		else
+			#echo "create id_rsa.pub,id_rsa faild"
+			log_info "create id_rsa.pub,id_rsa faild"
+		fi
+	fi
+}
+
+configure_trust_relation()
+{
+	if [ "$#" -ne "5" ]; then 
+		#echo "configure_trust_relation <remoteUser> <remoteHostname> <remotePasswd> <localUserhome> <timeout>";
+		log_error "configure_trust_relation <remoteUser> <remoteHostname> <remotePasswd> <localUserhome> <timeout>";
+		exit 1;
+	fi
+	local remoteUser=$1
+	local remoteHostname=$2
+	local remotePasswd=$3
+	local localUserhome=$4
+	local timeout=$5
+
+	expect -d -c "
+   
+		set timeout $timeout 
+		set trust true
+
+		#
+		# checking remote machine is be trusted
+		# if trust, return 0
+		# if not trust, return 1
+		#
+		spawn ssh $remoteUser@$remoteHostname
+		expect {
+			\"*yes/no\" { send \"yes\r\" ; exp_continue }
+			\"*assword:\" { send \"$remotePasswd\r\" ; set trust false }
+		}
+
+		expect { *\$* }
+
+		send \"exit\r\"
+		sleep 1
+		if { \"\$trust\" == \"false\"} {
+			expect eof
+			exit 1
+		}
+		expect eof
+		exit 0
+	" 1>/dev/null 2>&1
+	if [ "$?" -ne "0" ] ; then
+		#echo "machine is not be trusted, then exec ssh-copy-id to remote machine"
+		log_info "machine is not be trusted, then exec ssh-copy-id to remote machine"
+		expect_ssh_keygen $localUserhome $timeout
+		expect_ssh_copy_id $remoteUser $remoteHostname $remotePasswd $localUserhome $timeout
+	else
+		#echo "remote machine is be trusted"
+		log_info "remote machine is be trusted"
+	fi
+}
+
+main()
+{
+	expect_path=$(which expect)
+	if [ -z "$expect_path" ]; then
+		echo "expect is not exists"
+		exit 1
+	fi
+
+	if [ "$#" -ne 2 ]; then
+		help
+		exit 1
+	fi
+
+	local pieces=$(echo $1 | awk -F"@" '{print NF;}')
+	local remoteUser=""
+	local remoteHostname=""
+	local remotePasswd=$2
+	if [ $pieces -eq 2 ]; then
+		remoteUser=$(echo $1 | awk -F"@" '{print $1;}')
+		remoteHostname=$(echo $1 | awk -F"@" '{print $2;}')
+	elif [ $pieces -eq 1 ]; then
+		remoteUser="work"
+		remoteHostname=$1
+	fi
+	local localUserhome=$(cd ~; pwd;);
+	timeout=1;
+
+	configure_trust_relation $remoteUser $remoteHostname $remotePasswd $localUserhome $timeout
+}
+
+main $@
